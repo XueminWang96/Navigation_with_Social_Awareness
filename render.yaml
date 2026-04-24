@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: social-navigation-demo
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 social_navigation_demo.py --web --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
