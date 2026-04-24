@@ -732,7 +732,7 @@ WEB_APP_HTML = """<!doctype html>
             <div class="metric"><span class="label">Group Size</span><span class="value" id="group-value">-</span></div>
           </div>
           <h2>Interaction</h2>
-          <p class="hint">The browser view is fully local. It polls the Python demo for the current robot pose, selected approach slot, group center, attention target, and affinity-aware score in real time.</p>
+          <p class="hint">The browser view polls the demo service for the current robot pose, selected approach slot, group center, attention target, and affinity-aware score in real time.</p>
           <p class="hint">Use the canvas to inspect the dynamics: blue circles are people, orange halo marks active speakers, and the red robot waits outside until one of the visible people says "Come play!". After that, it prefers the shortest socially valid slot next to that inviter rather than cutting through the middle of the group.</p>
           <h2>Affinity</h2>
           <p class="hint">`0.50` is neutral. Higher values mean the robot is more comfortable orienting toward and standing nearer that person; lower values make it keep a little more distance.</p>
@@ -1029,8 +1029,26 @@ WEB_APP_HTML = """<!doctype html>
       groupButtons.forEach((button) => {
         button.classList.toggle("active", Number(button.dataset.groupSize) === Number(state.group_size));
       });
-      connectionPill.textContent = `Connected to local demo on port ${window.location.port || "80"}`;
+      connectionPill.textContent = connectionLabel;
       syncAffinityControls();
+    }
+
+    const isLocalDemo = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+    const connectionLabel = isLocalDemo
+      ? `Connected to local demo on port ${window.location.port || "80"}`
+      : `Connected to online demo at ${window.location.host}`;
+    const pollIntervalMs = isLocalDemo ? 120 : 350;
+    let pollTimer = null;
+    let stateFetchPromise = null;
+    let consecutiveFetchFailures = 0;
+
+    function scheduleNextPoll(delayMs = pollIntervalMs) {
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
+      pollTimer = window.setTimeout(() => {
+        void fetchState();
+      }, delayMs);
     }
 
     function queueAffinityUpdate(personId, affinity) {
@@ -1105,23 +1123,51 @@ WEB_APP_HTML = """<!doctype html>
       }
     }
 
-    async function fetchState() {
-      try {
-        const response = await fetch("/state", {cache: "no-store"});
-        state = await response.json();
-        updateMetrics();
-      } catch (error) {
-        connectionPill.textContent = `Connection lost: ${error}`;
+    async function fetchState({awaitInFlight = false} = {}) {
+      if (stateFetchPromise) {
+        return awaitInFlight ? stateFetchPromise : undefined;
       }
+      stateFetchPromise = (async () => {
+        try {
+          const response = await fetch("/state", {
+            cache: "no-store",
+            headers: {"Accept": "application/json"},
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          state = await response.json();
+          consecutiveFetchFailures = 0;
+          updateMetrics();
+        } catch (error) {
+          consecutiveFetchFailures += 1;
+          if (consecutiveFetchFailures >= 2) {
+            const message = error instanceof Error ? error.message : String(error);
+            connectionPill.textContent = `Reconnecting to demo... (${message})`;
+          }
+        } finally {
+          stateFetchPromise = null;
+          scheduleNextPoll();
+        }
+      })();
+      return stateFetchPromise;
     }
 
     async function postCommand(payload) {
-      await fetch("/command", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload),
-      });
-      await fetchState();
+      try {
+        const response = await fetch("/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await fetchState({awaitInFlight: true});
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        connectionPill.textContent = `Command failed: ${message}`;
+      }
     }
 
     function nearestPerson(worldPoint, radius = 0.55) {
@@ -1212,8 +1258,7 @@ WEB_APP_HTML = """<!doctype html>
     }
 
     window.addEventListener("resize", drawScene);
-    fetchState();
-    setInterval(fetchState, 90);
+    scheduleNextPoll(0);
     renderLoop();
   </script>
 </body>
@@ -1844,27 +1889,73 @@ DYAD_TRIAD_WEB_APP_HTML = """<!doctype html>
       approachButton.disabled = state.event.phase !== "dyad";
       eventPill.textContent = `Event: ${state.event.phase}`;
       summaryPill.textContent = state.summary;
-      connectionPill.textContent = `Connected to dyad -> triad demo on port ${window.location.port || "80"}`;
+      connectionPill.textContent = connectionLabel;
       syncControls();
     }
 
-    async function fetchState() {
-      try {
-        const response = await fetch("/dyad-triad/state", {cache: "no-store"});
-        state = await response.json();
-        updateMetrics();
-      } catch (error) {
-        connectionPill.textContent = `Connection lost: ${error}`;
+    const isLocalDemo = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+    const connectionLabel = isLocalDemo
+      ? `Connected to dyad -> triad demo on port ${window.location.port || "80"}`
+      : `Connected to dyad -> triad demo at ${window.location.host}`;
+    const pollIntervalMs = isLocalDemo ? 120 : 350;
+    let pollTimer = null;
+    let stateFetchPromise = null;
+    let consecutiveFetchFailures = 0;
+
+    function scheduleNextPoll(delayMs = pollIntervalMs) {
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
       }
+      pollTimer = window.setTimeout(() => {
+        void fetchState();
+      }, delayMs);
+    }
+
+    async function fetchState({awaitInFlight = false} = {}) {
+      if (stateFetchPromise) {
+        return awaitInFlight ? stateFetchPromise : undefined;
+      }
+      stateFetchPromise = (async () => {
+        try {
+          const response = await fetch("/dyad-triad/state", {
+            cache: "no-store",
+            headers: {"Accept": "application/json"},
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          state = await response.json();
+          consecutiveFetchFailures = 0;
+          updateMetrics();
+        } catch (error) {
+          consecutiveFetchFailures += 1;
+          if (consecutiveFetchFailures >= 2) {
+            const message = error instanceof Error ? error.message : String(error);
+            connectionPill.textContent = `Reconnecting to demo... (${message})`;
+          }
+        } finally {
+          stateFetchPromise = null;
+          scheduleNextPoll();
+        }
+      })();
+      return stateFetchPromise;
     }
 
     async function postCommand(payload) {
-      await fetch("/dyad-triad/command", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload),
-      });
-      await fetchState();
+      try {
+        const response = await fetch("/dyad-triad/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await fetchState({awaitInFlight: true});
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        connectionPill.textContent = `Command failed: ${message}`;
+      }
     }
 
     function queueCommand(key, payload) {
@@ -1950,8 +2041,7 @@ DYAD_TRIAD_WEB_APP_HTML = """<!doctype html>
     }
 
     window.addEventListener("resize", drawScene);
-    fetchState();
-    setInterval(fetchState, 90);
+    scheduleNextPoll(0);
     renderLoop();
   </script>
 </body>
@@ -2511,29 +2601,75 @@ DETOUR_WEB_APP_HTML = """<!doctype html>
       toggleRunButton.textContent = state.running ? "Pause" : "Resume";
       summaryPill.textContent = state.summary;
       scenarioPill.textContent = `Scenario: ${state.scenario_label}`;
-      connectionPill.textContent = `Connected to detour demo on port ${window.location.port || "80"}`;
+      connectionPill.textContent = connectionLabel;
       singleButton.classList.toggle("active", state.scenario_mode === "single_person");
       groupButton.classList.toggle("active", state.scenario_mode === "interactive_group");
       rotateButton.textContent = state.scenario_mode === "single_person" ? "Rotate Blocker" : "Rotate Speaker";
     }
 
-    async function fetchState() {
-      try {
-        const response = await fetch("/detour/state", {cache: "no-store"});
-        state = await response.json();
-        updateMetrics();
-      } catch (error) {
-        connectionPill.textContent = `Connection lost: ${error}`;
+    const isLocalDemo = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+    const connectionLabel = isLocalDemo
+      ? `Connected to detour demo on port ${window.location.port || "80"}`
+      : `Connected to detour demo at ${window.location.host}`;
+    const pollIntervalMs = isLocalDemo ? 120 : 350;
+    let pollTimer = null;
+    let stateFetchPromise = null;
+    let consecutiveFetchFailures = 0;
+
+    function scheduleNextPoll(delayMs = pollIntervalMs) {
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
       }
+      pollTimer = window.setTimeout(() => {
+        void fetchState();
+      }, delayMs);
+    }
+
+    async function fetchState({awaitInFlight = false} = {}) {
+      if (stateFetchPromise) {
+        return awaitInFlight ? stateFetchPromise : undefined;
+      }
+      stateFetchPromise = (async () => {
+        try {
+          const response = await fetch("/detour/state", {
+            cache: "no-store",
+            headers: {"Accept": "application/json"},
+          });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          state = await response.json();
+          consecutiveFetchFailures = 0;
+          updateMetrics();
+        } catch (error) {
+          consecutiveFetchFailures += 1;
+          if (consecutiveFetchFailures >= 2) {
+            const message = error instanceof Error ? error.message : String(error);
+            connectionPill.textContent = `Reconnecting to demo... (${message})`;
+          }
+        } finally {
+          stateFetchPromise = null;
+          scheduleNextPoll();
+        }
+      })();
+      return stateFetchPromise;
     }
 
     async function postCommand(payload) {
-      await fetch("/detour/command", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload),
-      });
-      await fetchState();
+      try {
+        const response = await fetch("/detour/command", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await fetchState({awaitInFlight: true});
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        connectionPill.textContent = `Command failed: ${message}`;
+      }
     }
 
     canvas.addEventListener("pointerdown", (event) => {
@@ -2582,8 +2718,7 @@ DETOUR_WEB_APP_HTML = """<!doctype html>
     }
 
     window.addEventListener("resize", drawScene);
-    fetchState();
-    setInterval(fetchState, 90);
+    scheduleNextPoll(0);
     renderLoop();
   </script>
 </body>
